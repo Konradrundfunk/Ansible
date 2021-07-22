@@ -1,0 +1,121 @@
+# further reading https://github.com/Chocobozzz/PeerTube/blob/develop/support/doc/production.md
+
+---
+- name : Do the prerequired steps for a peertube install 
+  hosts : peertube
+  vars_files: ../var/peertube.yml
+  handlers: 
+    - name: start ngnix
+      service:
+        name: nginx
+        state: started
+  tasks:
+  - name: Create a seperate user for web
+    ansible.builtin.user:
+      name: "{{ username }}"
+      shell: /bin/bash
+      home: /var/www/peertube
+      password: "{{ password }}"
+      state: present
+
+  - name: basic tools
+    apt:
+      name: 
+        - sudo 
+        - grep
+        - python-psycopg2
+        - unzip 
+      state: present 
+
+    
+  - name: add pakage sources 
+    ansible.builtin.script : ./postgres.sh
+
+
+  - name: install postgresql 
+    apt:
+      name: 
+        - postgresql-13
+      state: present 
+  
+  - name: Create a postgres peertube user
+    postgresql_user:
+      name: "{{ databaseusername }}"
+      password: "{{ password }}"
+    become: yes
+    become_user: postgres
+
+
+  - name : create a database for the videos 
+    community.postgresql.postgresql_db:
+      name : peertube_prod
+      template: template0
+      encoding: UTF-8
+      owner: "{{ databaseusername }}"
+    become: yes
+    become_user: postgres
+
+  - name: adding the postgres ext [1/2]
+    community.postgresql.postgresql_ext:
+      name: unaccent
+      state: present
+      db: peertube_prod
+    become: yes
+    become_user: postgres
+
+  - name: adding the postgres ext [2/2]
+    community.postgresql.postgresql_ext:
+      name: pg_trgm
+      state: present
+      db: peertube_prod
+    become: yes
+    become_user: postgres
+
+  - name: checking current peertube version
+    ansible.builtin.uri:
+      follow_redirects: no
+      method: GET
+      url: https://api.github.com/repos/chocobozzz/peertube/releases/latest
+      body_format: json
+    register: version
+  
+  - name: current peertube version 
+    ansible.builtin.debug: 
+      var: version["json"]["name"]
+
+  - name: set peertube version variable
+    set_fact:
+      peertubeversion: version["json"]["name"]
+
+  - name: "creating folders for peertube"
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: "750"
+    with_items:
+    - ["/var/www/peertube/config","/var/www/peertube/storage","/var/www/peertube/versions", "/var/www/peertube/tmp"]
+    become: yes
+    become_user: peertube
+
+  - name: dowload peertube 
+    get_url:
+      url: https://github.com/Chocobozzz/PeerTube/releases/download/{{ peertubeversion }}/peertube-{{ peertubeversion }}.zip
+      dest: /var/www/peertube/versions/
+    become: yes
+    become_user: peertube
+
+  - name: download shell code for nodejs
+    get_url:
+      url: https://deb.nodesource.com/setup_16.x
+      dest: /var/www/peertube/tmp/
+    register: shellnodejs
+
+  - name: install shell file 
+    command: "bash {{ shellnodejs.dest }}"
+    changed_when: False
+
+  - name: install nodejs
+    apt: 
+      name: nodejs
+      state: present
+
