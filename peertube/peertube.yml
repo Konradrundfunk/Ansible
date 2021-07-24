@@ -25,12 +25,30 @@
         - grep
         - python-psycopg2
         - unzip 
+        - redis-server
       state: present 
 
-    
-  - name: add pakage sources 
-    ansible.builtin.script : ./postgres.sh
+  - name: configure redis to support systemd 
+    lineinfile:
+      path: /etc/redis/redis.conf
+      regexp: "supervised"
+      line: supervised systemd
 
+  - name: restart redis
+    systemd:
+      name: redis-server
+      enabled: yes
+      state: restarted
+
+  - name: add postgres key
+    apt_key:
+      url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+  
+
+  - name: add postgres package source 
+    apt_repository:
+      repo: deb http://apt.postgresql.org/pub/repos/apt buster-pgdg main
+      state: present
 
   - name: install postgresql 
     apt:
@@ -44,7 +62,7 @@
       password: "{{ password }}"
     become: yes
     become_user: postgres
-
+    
 
   - name : create a database for the videos 
     community.postgresql.postgresql_db:
@@ -55,21 +73,16 @@
     become: yes
     become_user: postgres
 
-  - name: adding the postgres ext [1/2]
+  - name: adding the postgres ext
     community.postgresql.postgresql_ext:
-      name: unaccent
+      name: "{{ item }}"
       state: present
       db: peertube_prod
+    with_items: 
+      - ["pg_trgm", "unaccent"]
     become: yes
     become_user: postgres
 
-  - name: adding the postgres ext [2/2]
-    community.postgresql.postgresql_ext:
-      name: pg_trgm
-      state: present
-      db: peertube_prod
-    become: yes
-    become_user: postgres
 
   - name: checking current peertube version
     ansible.builtin.uri:
@@ -83,34 +96,39 @@
     ansible.builtin.debug: 
       var: version["json"]["name"]
 
-  - name: set peertube version variable
-    set_fact:
-      peertubeversion: version["json"]["name"]
-
   - name: "creating folders for peertube"
     file:
       path: "{{ item }}"
       state: directory
       mode: "750"
     with_items:
-    - ["/var/www/peertube/config","/var/www/peertube/storage","/var/www/peertube/versions", "/var/www/peertube/tmp"]
+    - ["/var/www/peertube/config","/var/www/peertube/storage","/var/www/peertube/versions","/var/www/peertube/tmp/"]
     become: yes
     become_user: peertube
+
+  - name: check weather version is already installed
+    stat: path=/var/www/peertube/versions/peertube-{{ version["json"]["name"] }}
+    register: downloaded
 
   - name: dowload peertube 
-    get_url:
-      url: https://github.com/Chocobozzz/PeerTube/releases/download/{{ peertubeversion }}/peertube-{{ peertubeversion }}.zip
+    unarchive:
+      src: https://github.com/Chocobozzz/PeerTube/releases/download/{{ version["json"]["name"] }}/peertube-{{ version["json"]["name"] }}.zip
       dest: /var/www/peertube/versions/
+      remote_src: True
     become: yes
     become_user: peertube
+    when: not downloaded.stat.exists
 
+
+    # Note using a old lts version cause a yard dependency is to old
+    # if an update is ready just change the 14 to 16 and delete the node js install from the mashine
   - name: download shell code for nodejs
     get_url:
-      url: https://deb.nodesource.com/setup_16.x
+      url: https://deb.nodesource.com/setup_14.x
       dest: /var/www/peertube/tmp/
     register: shellnodejs
 
-  - name: install shell file 
+  - name: setup nodejs 
     command: "bash {{ shellnodejs.dest }}"
     changed_when: False
 
@@ -118,4 +136,55 @@
     apt: 
       name: nodejs
       state: present
+  
+  - name: install yarn
+    npm:
+      name: yarn
+      state: present
+      global: yes
+  
+  - name: create a syslink for latest version
+    file:
+      src: /var/www/peertube/versions/peertube-{{ version["json"]["name"] }}
+      dest: "/var/www/peertube/peertube-latest"
+      state: link
 
+  - name: yarn install of dependencies
+    yarn:
+      path: /var/www/peertube/peertube-latest/
+      production: yes
+      state: present
+    become: yes 
+    become_user: peertube
+
+  - name: copy the config into the folder
+    copy:
+      src: ../var/peertube.conf.yaml
+      dest: /var/www/peertube/config/production.yaml
+      owner: peertube
+      mode: "750"
+  
+  - name: checking weather config file is already moved
+    stat: path=/var/www/peertube/config/default.yaml
+    register: conf
+
+  - name: copy the default config over 
+    command: cp /var/www/peertube/peertube-latest/config/default.yaml /var/www/peertube/config/default.yaml
+    become: yes
+    become_user: peertube
+    when: not conf.stat.exists
+
+  - name: checking weather systemd file is already moved
+    stat: path=/etc/systemd/system/peertube.service
+    register: conf
+
+  - name: copy the default systemd file 
+    command: cp /var/www/peertube/peertube-latest/support/systemd/peertube.service /etc/systemd/system/
+    when: not conf.stat.exists
+    
+  - name: reload systemd
+    systemd:
+      daemon_reload: true
+      name: peertube.service
+      state: started
+      enabled: yes
