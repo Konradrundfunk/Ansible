@@ -1,0 +1,4 @@
+{
+    // had to use python2 because of the postgres database extentions
+    "python.pythonPath": "/bin/python"
+}

@@ -26,6 +26,7 @@
         - python-psycopg2
         - unzip 
         - redis-server
+        - ffmpeg
       state: present 
 
   - name: configure redis to support systemd 
@@ -186,5 +187,5 @@
     systemd:
       daemon_reload: true
       name: peertube.service
-      state: started
+      state: restarted
       enabled: yes
